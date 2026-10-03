@@ -57,6 +57,7 @@ export function useChatSession(name: string, localStream: MediaStream | null) {
         };
 
         const createPeer = (id: string): RTCPeerConnection => {
+            console.log(`[rtc] creating peer for room ${id}`);
             teardownPeer();
             const conn = new RTCPeerConnection({ iceServers: ICE_SERVERS });
             localStream.getTracks().forEach((track) => conn.addTrack(track, localStream));
@@ -68,6 +69,7 @@ export function useChatSession(name: string, localStream: MediaStream | null) {
                 }
             };
             conn.onconnectionstatechange = () => {
+                console.log(`[rtc] connection state: ${conn.connectionState}`);
                 if (pc !== conn) return;
                 if (conn.connectionState === "connected") setStatus("connected");
                 // No route between peers (e.g. symmetric NAT without TURN): move on rather than hang.
@@ -97,8 +99,12 @@ export function useChatSession(name: string, localStream: MediaStream | null) {
                 Promise.resolve(fn(payload)).catch((err) => console.error(`[rtc] ${label} failed`, err));
             };
 
-        socket.on("connect", () => socket.emit("join", { name }));
+        socket.on("connect", () => {
+            console.log("[socket] connected");
+            socket.emit("join", { name });
+        });
         socket.on("disconnect", () => {
+            console.log("[socket] disconnected");
             teardownPeer();
             setStatus("connecting");
         });
@@ -110,6 +116,7 @@ export function useChatSession(name: string, localStream: MediaStream | null) {
         });
 
         socket.on("partner-left", () => {
+            console.log("[socket] partner-left");
             teardownPeer();
             setStatus("waiting");
         });
@@ -117,17 +124,20 @@ export function useChatSession(name: string, localStream: MediaStream | null) {
         socket.on(
             "send-offer",
             safe<MatchPayload>("offer", async ({ roomId: id, peerName: peer }) => {
+                console.log(`[socket] send-offer from ${peer}`);
                 const conn = createPeer(id); // resets peer state — must precede setPeerName
                 setPeerName(peer);
                 setStatus("matched");
                 const offer = await conn.createOffer();
                 if (pc !== conn) return; // superseded by a newer match
                 await conn.setLocalDescription(offer);
+                console.log(`[rtc] sending offer to ${peer}`);
                 socket.emit("offer", { roomId: id, sdp: offer.sdp });
             }),
         );
 
         socket.on("matched", ({ roomId: id, peerName: peer }: MatchPayload) => {
+            console.log(`[socket] matched with ${peer}`);
             createPeer(id);
             setPeerName(peer);
             setStatus("matched");
@@ -136,6 +146,7 @@ export function useChatSession(name: string, localStream: MediaStream | null) {
         socket.on(
             "offer",
             safe<SdpPayload>("answer", async ({ roomId: id, sdp }) => {
+                console.log(`[socket] received offer`);
                 const conn = pc;
                 if (!conn || roomId !== id) return;
                 await conn.setRemoteDescription({ type: "offer", sdp });
@@ -143,6 +154,7 @@ export function useChatSession(name: string, localStream: MediaStream | null) {
                 const answer = await conn.createAnswer();
                 if (pc !== conn) return;
                 await conn.setLocalDescription(answer);
+                console.log(`[rtc] sending answer`);
                 socket.emit("answer", { roomId: id, sdp: answer.sdp });
             }),
         );
@@ -150,6 +162,7 @@ export function useChatSession(name: string, localStream: MediaStream | null) {
         socket.on(
             "answer",
             safe<SdpPayload>("set answer", async ({ roomId: id, sdp }) => {
+                console.log(`[socket] received answer`);
                 const conn = pc;
                 if (!conn || roomId !== id) return;
                 await conn.setRemoteDescription({ type: "answer", sdp });
@@ -160,9 +173,11 @@ export function useChatSession(name: string, localStream: MediaStream | null) {
         socket.on(
             "ice-candidate",
             safe<IcePayload>("add candidate", async ({ roomId: id, candidate }) => {
+                console.log(`[socket] received ice-candidate`);
                 const conn = pc;
                 if (!conn || roomId !== id) return;
                 if (!conn.remoteDescription) {
+                    console.log(`[rtc] buffering ice-candidate`);
                     pending.push(candidate);
                     return;
                 }
